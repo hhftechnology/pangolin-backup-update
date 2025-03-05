@@ -43,11 +43,11 @@ temp_dir=""
 OPERATION_CANCELLED=false
 
 # Source modular scripts
-source "${SCRIPT_DIR}/utils.sh"
-source "${SCRIPT_DIR}/config.sh"
-source "${SCRIPT_DIR}/backup.sh"
-source "${SCRIPT_DIR}/update.sh"
-source "${SCRIPT_DIR}/cron.sh"
+source "${SCRIPT_DIR}/utils-ba-up-ma.sh"
+source "${SCRIPT_DIR}/config-ba-up-ma.sh"
+source "${SCRIPT_DIR}/backup-ba-up-ma.sh"
+source "${SCRIPT_DIR}/update-ba-up-ma.sh"
+source "${SCRIPT_DIR}/cron-ba-up-ma.sh"
 
 # Set trap for cleanup
 trap cleanup_and_exit SIGINT SIGTERM EXIT
