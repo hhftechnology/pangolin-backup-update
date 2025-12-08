@@ -547,7 +547,7 @@ update_images() {
                 log "INFO" "Restoring docker-compose.yml from backup..."
                 mv "${DOCKER_COMPOSE_FILE}.bak" "${DOCKER_COMPOSE_FILE}" || log "ERROR" "Failed to restore docker-compose.yml from backup!"
                 log "INFO" "Attempting to start with original configuration..."
-                ${DOCKER_COMPOSE_CMD} up -d || log "ERROR" "Failed to start stack with original configuration"
+                docker_compose up -d || log "ERROR" "Failed to start stack with original configuration"
             fi
         fi
         return 1
