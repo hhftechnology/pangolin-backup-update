@@ -37,6 +37,7 @@ readonly BACKUP_TIMESTAMP="$(date +"%Y%m%d_%H%M%S")"
 PANGOLIN_DIR="${SCRIPT_DIR}"
 DRY_RUN=false
 INTERACTIVE=true
+DEBUG=false
 INCLUDE_CROWDSEC=true
 SERVICES=("${SERVICES_WITH_CROWDSEC[@]}")
 temp_dir=""
@@ -61,6 +62,7 @@ parse_arguments() {
         case "$1" in
             --cron) INTERACTIVE=false; shift ;;
             --dry-run) DRY_RUN=true; shift ;;
+            --debug) DEBUG=true; shift ;;
             --config) [[ -n "${2:-}" ]] && { CONFIG_FILE="$2"; shift 2; } || { print_error "Missing argument for --config"; exit 1; } ;;
             --dir) [[ -n "${2:-}" ]] && { BACKUP_DIR="$2"; shift 2; } || { print_error "Missing argument for --dir"; exit 1; } ;;
             --help) print_usage; exit 0 ;;

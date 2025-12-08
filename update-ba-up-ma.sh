@@ -25,40 +25,175 @@ docker_compose() {
     fi
 }
 
-# Extract current image tags with more flexible pattern matching
+# Analyze docker-compose file structure for debugging
+analyze_docker_compose() {
+    local file="$1"
+    local show_details="${2:-false}"
+
+    if [[ ! -f "${file}" || ! -r "${file}" ]]; then
+        log "ERROR" "Cannot analyze file: ${file}"
+        return 1
+    fi
+
+    log "INFO" "Analyzing docker-compose file structure..."
+
+    if [[ "${show_details}" == true ]]; then
+        log "INFO" "File contents preview (first 20 lines):"
+        head -20 "${file}" | while IFS= read -r line; do
+            log "DEBUG" "  ${line}"
+        done
+    fi
+
+    # Check for services section
+    if grep -q "^[[:space:]]*services:" "${file}"; then
+        log "INFO" "Found 'services:' section"
+    else
+        log "WARNING" "No 'services:' section found - this may not be a valid docker-compose file"
+    fi
+
+    # List all services found
+    local services_found=$(grep "^[[:space:]]*[a-zA-Z_-][a-zA-Z0-9_-]*:" "${file}" | grep -v "^[[:space:]]*version:" | grep -v "^[[:space:]]*services:" | sed 's/^[[:space:]]*//' | sed 's/:.*//' | sort | uniq)
+    if [[ -n "${services_found}" ]]; then
+        log "INFO" "Services found in file: $(echo "${services_found}" | tr '\n' ' ')"
+    else
+        log "WARNING" "No services found in docker-compose file"
+    fi
+
+    # Check for image lines
+    local image_count=$(grep -c "^[[:space:]]*image:" "${file}" || true)
+    log "INFO" "Found ${image_count} image definitions"
+
+    # Show image lines if in debug mode
+    if [[ "${show_details}" == true && ${image_count} -gt 0 ]]; then
+        log "INFO" "Image definitions found:"
+        grep "^[[:space:]]*image:" "${file}" | while IFS= read -r line; do
+            log "DEBUG" "  ${line}"
+        done
+    fi
+
+    return 0
+}
+
+# Extract current image tags with robust YAML parsing
 extract_tag() {
     local service_name=$1
     local image_name=$2
     local tag=""
-    local in_service=false
-    local service_pattern="^  ${service_name}:"
+    local debug_output=""
 
-    while IFS= read -r line; do
-        if [[ "${line}" =~ ${service_pattern} ]]; then
-            in_service=true
-        elif [[ "${in_service}" == true && "${line}" =~ ^[[:space:]]{2}[a-z] ]]; then
-            # Next service or end of services
-            break
-        elif [[ "${in_service}" == true && "${line}" =~ image:[[:space:]]*${image_name}: ]]; then
-            # Extract the tag after the last colon
-            tag=$(echo "${line}" | sed -n 's/.*:\([^:]*\)$/\1/p')
-            break
+    # Validate inputs
+    if [[ -z "${service_name}" || -z "${image_name}" ]]; then
+        log "ERROR" "extract_tag: Invalid parameters - service_name and image_name are required"
+        printf "latest"
+        return 1
+    fi
+
+    # Check if docker-compose file exists and is readable
+    if [[ ! -f "${DOCKER_COMPOSE_FILE}" || ! -r "${DOCKER_COMPOSE_FILE}" ]]; then
+        log "ERROR" "extract_tag: Docker compose file not found or not readable: ${DOCKER_COMPOSE_FILE}"
+        printf "latest"
+        return 1
+    fi
+
+    debug_output+="Service: ${service_name}, Image: ${image_name}\n"
+
+    # Try yq first (most reliable YAML parser)
+    if command -v yq &>/dev/null; then
+        debug_output+="Using yq for parsing\n"
+        # Try different yq syntax variations
+        tag=$(yq eval ".services.${service_name}.image" "${DOCKER_COMPOSE_FILE}" 2>/dev/null | sed 's/.*://' || true)
+        if [[ -n "${tag}" && "${tag}" != "null" ]]; then
+            debug_output+="yq found tag: ${tag}\n"
+        else
+            # Try alternative yq syntax
+            tag=$(yq ".services.${service_name}.image" "${DOCKER_COMPOSE_FILE}" 2>/dev/null | sed 's/.*://' || true)
+            if [[ -n "${tag}" && "${tag}" != "null" ]]; then
+                debug_output+="yq alt syntax found tag: ${tag}\n"
+            fi
         fi
-    done < "${DOCKER_COMPOSE_FILE}"
+    fi
 
-    if [[ -z "${tag}" ]]; then
+    # If yq didn't work or isn't available, try improved regex parsing
+    if [[ -z "${tag}" || "${tag}" == "null" ]]; then
+        debug_output+="Falling back to regex parsing\n"
+
+        # Use awk for more reliable parsing - handles different indentation levels
+        tag=$(awk -v service="${service_name}" -v image="${image_name}" '
+            BEGIN { in_service = 0; found_image = 0 }
+            # Match service definition with flexible indentation
+            /^[[:space:]]*services:/ { in_services = 1 }
+            in_services && /^[[:space:]]*[^[:space:]]/ && !/^[[:space:]]*services:/ && !/^[[:space:]]*version:/ {
+                # Extract service name, handling different indentation
+                match($0, /^[[:space:]]*([^:[:space:]]+)/, arr)
+                current_service = arr[1]
+                in_service = (current_service == service) ? 1 : 0
+                next
+            }
+            in_service && /^[[:space:]]*image:[[:space:]]*/ {
+                # Extract image line
+                sub(/^[[:space:]]*image:[[:space:]]*/, "")
+                if ($0 ~ image ":") {
+                    # Extract tag after colon
+                    split($0, parts, ":")
+                    if (length(parts) >= 2) {
+                        found_image = 1
+                        print parts[length(parts)]
+                        exit
+                    }
+                }
+                next
+            }
+            END {
+                if (!found_image) {
+                    exit 1
+                }
+            }
+        ' "${DOCKER_COMPOSE_FILE}" 2>/dev/null || true)
+
+        if [[ -n "${tag}" ]]; then
+            debug_output+="Regex parsing found tag: ${tag}\n"
+        fi
+    fi
+
+    # Final fallback: try simple grep/sed approach
+    if [[ -z "${tag}" || "${tag}" == "null" ]]; then
+        debug_output+="Trying simple grep/sed fallback\n"
+
+        # Look for the image line more flexibly
+        local image_line=$(grep -A 5 "^[[:space:]]*${service_name}:" "${DOCKER_COMPOSE_FILE}" | grep -m 1 "image.*${image_name}" || true)
+
+        if [[ -n "${image_line}" ]]; then
+            # Extract tag using multiple approaches
+            tag=$(echo "${image_line}" | sed -n 's/.*'"${image_name}"'://p' | sed 's/[[:space:]]*#.*//' | sed 's/[[:space:]]*$//' || true)
+
+            if [[ -n "${tag}" ]]; then
+                debug_output+="Simple grep found tag: ${tag}\n"
+            fi
+        fi
+    fi
+
+    # Validate extracted tag
+    if [[ -z "${tag}" || "${tag}" == "null" ]]; then
+        debug_output+="No tag found, using latest\n"
         log "WARNING" "Could not extract tag for '${image_name}' in service '${service_name}', using 'latest'"
+        log "DEBUG" "Tag extraction debug info:\n${debug_output}"
         tag="latest"
+    else
+        # Clean up the tag (remove quotes, extra spaces)
+        tag=$(echo "${tag}" | sed 's/^"\(.*\)"$/\1/' | sed "s/^'\(.*\)'$/\1/" | sed 's/[[:space:]]*#.*//' | sed 's/[[:space:]]*$//' | sed 's/^[[:space:]]*//')
+        debug_output+="Final cleaned tag: ${tag}\n"
+        log "DEBUG" "Tag extraction successful: ${service_name} -> ${image_name}:${tag}"
     fi
 
     printf "%s" "${tag}"
     return 0
 }
 
-# Get current tags
+# Get current tags with enhanced validation
 get_current_tags() {
     log "INFO" "Reading current image tags..."
 
+    # Comprehensive file validation
     if [[ ! -f "${DOCKER_COMPOSE_FILE}" ]]; then
         log "ERROR" "Docker compose file not found: ${DOCKER_COMPOSE_FILE}"
         if [[ "${INTERACTIVE}" == true ]]; then
@@ -71,7 +206,9 @@ get_current_tags() {
             elif [[ "${response,,}" == "y" ]]; then
                 printf "Enter the path to your docker-compose.yml file: "
                 read -r DOCKER_COMPOSE_FILE
-                return "${FUNCNAME[0]}"
+                # Recursively call this function with new file path
+                get_current_tags
+                return $?
             fi
         fi
         PANGOLIN_CURRENT="latest"
@@ -81,20 +218,84 @@ get_current_tags() {
         return 0
     fi
 
-    # Extract tags using improved extract_tag function
+    # Check if file is readable
+    if [[ ! -r "${DOCKER_COMPOSE_FILE}" ]]; then
+        log "ERROR" "Docker compose file is not readable: ${DOCKER_COMPOSE_FILE}"
+        log "INFO" "Please check file permissions and try again"
+        PANGOLIN_CURRENT="latest"
+        GERBIL_CURRENT="latest"
+        TRAEFIK_CURRENT="latest"
+        [[ "${INCLUDE_CROWDSEC}" == true ]] && CROWDSEC_CURRENT="latest"
+        return 0
+    fi
+
+    # Check if file is empty
+    if [[ ! -s "${DOCKER_COMPOSE_FILE}" ]]; then
+        log "ERROR" "Docker compose file is empty: ${DOCKER_COMPOSE_FILE}"
+        PANGOLIN_CURRENT="latest"
+        GERBIL_CURRENT="latest"
+        TRAEFIK_CURRENT="latest"
+        [[ "${INCLUDE_CROWDSEC}" == true ]] && CROWDSEC_CURRENT="latest"
+        return 0
+    fi
+
+    # Validate basic YAML structure
+    if ! head -5 "${DOCKER_COMPOSE_FILE}" | grep -q "^[[:space:]]*version:\|^[[:space:]]*services:"; then
+        log "WARNING" "Docker compose file may not be valid YAML. Proceeding with caution."
+    fi
+
+    log "INFO" "Docker compose file validation passed: ${DOCKER_COMPOSE_FILE}"
+
+    # Extract tags using improved extract_tag function with error handling
+    local extraction_errors=()
+
     PANGOLIN_CURRENT=$(extract_tag "pangolin" "fosrl/pangolin")
+    if [[ "${PANGOLIN_CURRENT}" == "latest" ]]; then
+        extraction_errors+=("pangolin")
+    fi
     log "INFO" "Found Pangolin tag: ${PANGOLIN_CURRENT}"
 
     GERBIL_CURRENT=$(extract_tag "gerbil" "fosrl/gerbil")
+    if [[ "${GERBIL_CURRENT}" == "latest" ]]; then
+        extraction_errors+=("gerbil")
+    fi
     log "INFO" "Found Gerbil tag: ${GERBIL_CURRENT}"
 
     TRAEFIK_CURRENT=$(extract_tag "traefik" "traefik")
+    if [[ "${TRAEFIK_CURRENT}" == "latest" ]]; then
+        extraction_errors+=("traefik")
+    fi
     log "INFO" "Found Traefik tag: ${TRAEFIK_CURRENT}"
 
     if [[ "${INCLUDE_CROWDSEC}" == true ]]; then
         CROWDSEC_CURRENT=$(extract_tag "crowdsec" "crowdsecurity/crowdsec")
+        if [[ "${CROWDSEC_CURRENT}" == "latest" ]]; then
+            extraction_errors+=("crowdsec")
+        fi
         log "INFO" "Found CrowdSec tag: ${CROWDSEC_CURRENT}"
     fi
+
+    # Report extraction issues
+    if [[ ${#extraction_errors[@]} -gt 0 ]]; then
+        log "WARNING" "Tag extraction failed for services: ${extraction_errors[*]}"
+        log "INFO" "This may indicate issues with the docker-compose.yml file format or structure"
+        log "INFO" "The update will proceed with 'latest' tags, but you may want to verify the docker-compose.yml file"
+
+        # Offer to analyze the file in interactive mode
+        if [[ "${INTERACTIVE}" == true ]]; then
+            printf "\n${YELLOW}Would you like to analyze the docker-compose file structure? (y/n):${NC} "
+            local analyze_response
+            read -r analyze_response
+            if [[ "${analyze_response,,}" == "y" ]]; then
+                analyze_docker_compose "${DOCKER_COMPOSE_FILE}" true
+                printf "\n${YELLOW}Press Enter to continue...${NC} "
+                read -r
+            fi
+        fi
+    else
+        log "SUCCESS" "All image tags extracted successfully"
+    fi
+
     return 0
 }
 # Interactive tag selection with improved user experience
