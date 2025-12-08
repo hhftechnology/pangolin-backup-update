@@ -26,12 +26,23 @@ docker_compose() {
 }
 
 # Extract current image tags with robust pattern matching
+# Handles any registry prefix (docker.io/, ghcr.io/, custom registries, or no registry)
 extract_tag() {
     local service_name=$1
     local image_name=$2
     local tag=""
     local in_service=false
     local service_pattern="^[[:space:]]*${service_name}:"
+    
+    # Extract the base image name (the part we need to match)
+    # The image_name parameter is the base we're looking for (e.g., "fosrl/pangolin" or "traefik")
+    # We want to match it with any registry prefix or none:
+    # - "fosrl/pangolin" matches: "fosrl/pangolin:tag", "docker.io/fosrl/pangolin:tag", "ghcr.io/fosrl/pangolin:tag"
+    # - "traefik" matches: "traefik:tag", "docker.io/traefik:tag", "registry/traefik:tag"
+    local image_base="${image_name}"
+    
+    # Escape special regex characters in image_base for pattern matching
+    local escaped_base=$(printf '%s\n' "${image_base}" | sed 's/[[\.*^$()+?{|]/\\&/g')
     
     # Strategy 1: Try using docker compose config (most reliable)
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 2>/dev/null; then
@@ -63,11 +74,17 @@ extract_tag() {
                         image_value="${image_value//\"/}"
                         image_value="${image_value//\'/}"
                         
-                        # Check if this matches our image
-                        if [[ "${image_value}" =~ ^${image_name}: ]]; then
-                            # Extract tag
+                        # Check if this image ends with our image_base (handles any registry prefix)
+                        # Match pattern: anything ending with /image_base:tag or /image_base
+                        if [[ "${image_value}" =~ /${escaped_base}: ]] || [[ "${image_value}" =~ /${escaped_base}$ ]] || \
+                           [[ "${image_value}" =~ ^${escaped_base}: ]] || [[ "${image_value}" == "${escaped_base}" ]]; then
+                            # Extract tag (everything after the last colon)
                             if [[ "${image_value}" =~ :([^:]+)$ ]]; then
                                 tag="${BASH_REMATCH[1]}"
+                                break
+                            else
+                                # No tag specified, default to latest
+                                tag="latest"
                                 break
                             fi
                         fi
@@ -106,12 +123,13 @@ extract_tag() {
                     image_value="${image_value//\"/}"
                     image_value="${image_value//\'/}"
                     
-                    # Check if this image matches our target
-                    if [[ "${image_value}" =~ ^${image_name}: ]] || [[ "${image_value}" == "${image_name}" ]]; then
+                    # Check if this image ends with our image_base (handles any registry prefix)
+                    if [[ "${image_value}" =~ /${escaped_base}: ]] || [[ "${image_value}" =~ /${escaped_base}$ ]] || \
+                       [[ "${image_value}" =~ ^${escaped_base}: ]] || [[ "${image_value}" == "${escaped_base}" ]]; then
                         # Extract tag (everything after the last colon)
                         if [[ "${image_value}" =~ :([^:]+)$ ]]; then
                             tag="${BASH_REMATCH[1]}"
-                        elif [[ "${image_value}" == "${image_name}" ]]; then
+                        else
                             # No tag specified, default to latest
                             tag="latest"
                         fi
@@ -122,10 +140,10 @@ extract_tag() {
         done < "${DOCKER_COMPOSE_FILE}"
     fi
     
-    # Strategy 3: Fallback - use grep with better pattern
+    # Strategy 3: Fallback - use grep/awk with flexible pattern matching
     if [[ -z "${tag}" ]]; then
         # Find the service section and extract image line
-        local image_line=$(awk -v service="${service_name}" -v image="${image_name}" '
+        local image_line=$(awk -v service="${service_name}" '
             /^[[:space:]]*'"${service_name}"':/ { in_service=1; next }
             in_service && /^[[:space:]]*[a-zA-Z]/ && !/^[[:space:]]*image:/ { 
                 if (match($0, /^[[:space:]]*[a-zA-Z]/)) {
@@ -141,23 +159,25 @@ extract_tag() {
         ' "${DOCKER_COMPOSE_FILE}")
         
         if [[ -n "${image_line}" ]]; then
-            # Extract tag using sed - match image:name:tag pattern
-            tag=$(echo "${image_line}" | sed -n "s|.*image:[[:space:]]*${image_name}:\([^[:space:]]*\).*|\1|p" | sed 's/[[:space:]]*$//')
-            # Remove quotes
-            tag="${tag//\"/}"
-            tag="${tag//\'/}"
+            # Extract tag using flexible pattern that matches any registry prefix
+            # Pattern: image: (optional registry/)*image_base:tag
+            tag=$(echo "${image_line}" | sed -n "s|.*image:[[:space:]]*[^[:space:]]*/${escaped_base}:\([^[:space:]]*\).*|\1|p" | sed 's/[[:space:]]*$//')
+            # If that didn't work, try without registry prefix
+            if [[ -z "${tag}" ]]; then
+                tag=$(echo "${image_line}" | sed -n "s|.*image:[[:space:]]*${escaped_base}:\([^[:space:]]*\).*|\1|p" | sed 's/[[:space:]]*$//')
+            fi
+            if [[ -n "${tag}" ]]; then
+                # Remove quotes
+                tag="${tag//\"/}"
+                tag="${tag//\'/}"
+            fi
         fi
     fi
     
     # Default to latest if still no tag found
     if [[ -z "${tag}" ]]; then
-        # Output warning directly to stderr so it doesn't interfere with stdout capture
-        # Use log function but redirect its output to stderr for warnings
-        if [[ -n "${YELLOW:-}" && -n "${NC:-}" ]]; then
-            printf "${YELLOW}WARNING: Could not extract tag for '%s' in service '%s', using 'latest'${NC}\n" "${image_name}" "${service_name}" >&2
-        else
-            printf "WARNING: Could not extract tag for '%s' in service '%s', using 'latest'\n" "${image_name}" "${service_name}" >&2
-        fi
+        # Output warning directly to stderr (force flush to ensure it's separate)
+        printf "WARNING: Could not extract tag for '%s' in service '%s', using 'latest'\n" "${image_name}" "${service_name}" >&2
         tag="latest"
     else
         # Clean up tag (remove any trailing whitespace or special chars)
@@ -165,6 +185,7 @@ extract_tag() {
     fi
 
     # Output tag to stdout only (warnings went to stderr)
+    # Use printf without newline to avoid extra whitespace
     printf "%s" "${tag}"
     return 0
 }
@@ -196,21 +217,25 @@ get_current_tags() {
     fi
 
     # Extract tags using improved extract_tag function
-    # Capture stdout (tag) while warnings go to stderr and are visible
-    PANGOLIN_CURRENT=$(extract_tag "pangolin" "fosrl/pangolin")
+    # Capture output and filter out any warning messages that might have been captured
+    PANGOLIN_CURRENT=$(extract_tag "pangolin" "fosrl/pangolin" 2>&1 | grep -v "WARNING:" | grep -v "^$" | head -1)
+    PANGOLIN_CURRENT=$(echo -n "${PANGOLIN_CURRENT}" | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "${PANGOLIN_CURRENT}" ]] && PANGOLIN_CURRENT="latest"
     log "INFO" "Found Pangolin tag: ${PANGOLIN_CURRENT}"
 
-    GERBIL_CURRENT=$(extract_tag "gerbil" "fosrl/gerbil")
+    GERBIL_CURRENT=$(extract_tag "gerbil" "fosrl/gerbil" 2>&1 | grep -v "WARNING:" | grep -v "^$" | head -1)
+    GERBIL_CURRENT=$(echo -n "${GERBIL_CURRENT}" | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "${GERBIL_CURRENT}" ]] && GERBIL_CURRENT="latest"
     log "INFO" "Found Gerbil tag: ${GERBIL_CURRENT}"
 
-    TRAEFIK_CURRENT=$(extract_tag "traefik" "traefik")
+    TRAEFIK_CURRENT=$(extract_tag "traefik" "traefik" 2>&1 | grep -v "WARNING:" | grep -v "^$" | head -1)
+    TRAEFIK_CURRENT=$(echo -n "${TRAEFIK_CURRENT}" | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "${TRAEFIK_CURRENT}" ]] && TRAEFIK_CURRENT="latest"
     log "INFO" "Found Traefik tag: ${TRAEFIK_CURRENT}"
 
     if [[ "${INCLUDE_CROWDSEC}" == true ]]; then
-        CROWDSEC_CURRENT=$(extract_tag "crowdsec" "crowdsecurity/crowdsec")
+        CROWDSEC_CURRENT=$(extract_tag "crowdsec" "crowdsecurity/crowdsec" 2>&1 | grep -v "WARNING:" | grep -v "^$" | head -1)
+        CROWDSEC_CURRENT=$(echo -n "${CROWDSEC_CURRENT}" | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ -z "${CROWDSEC_CURRENT}" ]] && CROWDSEC_CURRENT="latest"
         log "INFO" "Found CrowdSec tag: ${CROWDSEC_CURRENT}"
     fi
@@ -333,8 +358,22 @@ update_service_image() {
             image_value="${image_value//\"/}"
             image_value="${image_value//\'/}"
             
-            # Check if this image matches our target (with or without current tag)
-            if [[ "${image_value}" =~ ^${image_name}: ]] || [[ "${image_value}" == "${image_name}" ]]; then
+            # Extract the base image name (the part we need to match)
+            # The image_name parameter is the base we're looking for
+            local image_base="${image_name}"
+            
+            # Escape special regex characters in image_base for pattern matching
+            local escaped_base=$(printf '%s\n' "${image_base}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            
+            # Check if this image ends with our image_base (handles any registry prefix)
+            # Match: anything ending with /image_base:tag or /image_base, or just image_base:tag/image_base
+            local matched=false
+            if [[ "${image_value}" =~ /${escaped_base}: ]] || [[ "${image_value}" =~ /${escaped_base}$ ]] || \
+               [[ "${image_value}" =~ ^${escaped_base}: ]] || [[ "${image_value}" == "${escaped_base}" ]]; then
+                matched=true
+            fi
+            
+            if [[ "${matched}" == true ]]; then
                 # Preserve original indentation and formatting
                 local indent=$(echo "${line}" | sed 's/[^ ].*//')
                 local quote_char=""
@@ -345,8 +384,25 @@ update_service_image() {
                     quote_char="'"
                 fi
                 
-                # Build new image line preserving format
-                echo "${indent}image: ${quote_char}${image_name}:${new_tag}${quote_char}" >> "${tmp_file}"
+                # Determine the full image name to use (preserve registry prefix if it was there)
+                # Extract the registry/namespace part from the original image_value
+                local image_prefix="${image_name}"
+                
+                # If original image had a registry prefix (contains / before the base name), preserve it
+                if [[ "${image_value}" =~ ^([^[:space:]]+/)+${escaped_base} ]]; then
+                    # Extract everything before the base name (registry/namespace part)
+                    local registry_part=$(echo "${image_value}" | sed "s|/${escaped_base}.*||")
+                    if [[ -n "${registry_part}" ]]; then
+                        # Preserve the registry prefix
+                        image_prefix="${registry_part}/${image_base}"
+                    fi
+                elif [[ "${image_value}" =~ ^${escaped_base} ]]; then
+                    # No registry prefix in original, use image_name as-is (might have registry or not)
+                    image_prefix="${image_name}"
+                fi
+                
+                # Build new image line preserving format and registry prefix
+                echo "${indent}image: ${quote_char}${image_prefix}:${new_tag}${quote_char}" >> "${tmp_file}"
                 update_successful=true
                 log "SUCCESS" "Updated ${service_name}: ${current_tag} -> ${new_tag}"
             else
@@ -361,7 +417,9 @@ update_service_image() {
     
     if [[ "${update_successful}" == true ]]; then
         # Verify the update before replacing
-        if grep -q "${image_name}:${new_tag}" "${tmp_file}" 2>/dev/null; then
+        # Check if the new tag appears in the file (with any registry prefix)
+        local escaped_base=$(printf '%s\n' "${image_name}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        if grep -qE "(/)?${escaped_base}:${new_tag}" "${tmp_file}" 2>/dev/null; then
             mv "${tmp_file}" "${file}" || { 
                 log "ERROR" "Failed to update ${file} for ${service_name}"
                 rm -f "${tmp_file}" 2>/dev/null || true
