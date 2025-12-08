@@ -28,7 +28,6 @@ print_usage() {
     printf "OPTIONS:\n"
     printf "  --cron              Run in non-interactive mode (for cron jobs)\n"
     printf "  --dry-run           Simulate actions without making actual changes\n"
-    printf "  --debug             Enable debug output for troubleshooting\n"
     printf "  --config FILE       Use alternative config file\n"
     printf "  --dir PATH          Override backup directory\n"
     printf "  --help              Show this help message\n\n"
@@ -85,23 +84,17 @@ log() {
     local level="$1"
     local message="$2"
     local timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
-
+    
     if [[ -n "${LOG_FILE}" ]]; then
         mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
         printf "[%s] [%s] %s\n" "${timestamp}" "${level}" "${message}" >> "${LOG_FILE}" 2>/dev/null || true
     fi
-
+    
     case "${level}" in
         "ERROR") print_error "${message}" ;;
         "WARNING") print_warning "${message}" ;;
         "SUCCESS") print_success "${message}" ;;
         "INFO") print_info "${message}" ;;
-        "DEBUG")
-            # Only show debug messages if DEBUG is enabled
-            if [[ "${DEBUG}" == true ]]; then
-                printf "${BLUE}[DEBUG]${NC} %s\n" "${message}"
-            fi
-            ;;
         *) printf "[%s] %s\n" "${level}" "${message}" ;;
     esac
 }
