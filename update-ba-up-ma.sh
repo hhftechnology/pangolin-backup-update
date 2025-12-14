@@ -430,7 +430,7 @@ update_service_image() {
             rm -f "${tmp_file}" 2>/dev/null || true
             return 1
         fi
-    else
+        else
         log "ERROR" "Could not find image line for ${service_name} with ${image_name}"
         rm -f "${tmp_file}" 2>/dev/null || true
         return 1
