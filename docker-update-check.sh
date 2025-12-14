@@ -240,15 +240,19 @@ check_for_updates() {
         local exclude_filter="${OPT_EXCLUDE:-${UPDATE_EXCLUDE_CONTAINERS}}"
         local label_filter="${OPT_LABEL:-${UPDATE_LABEL_FILTER}}"
 
-        # Check name filters
-        if ! container_matches_filter "${container_name}" "${include_filter}" "${exclude_filter}"; then
+        # Check name filters (capture return code to avoid exit on failure)
+        container_matches_filter "${container_name}" "${include_filter}" "${exclude_filter}"
+        local name_match=$?
+        if [[ ${name_match} -ne 0 ]]; then
             log "INFO" "Skipping ${container_name} (filtered by name)"
             ((filtered_count++))
             continue
         fi
 
-        # Check label filter
-        if ! container_has_label "${container_id}" "${label_filter}"; then
+        # Check label filter (capture return code to avoid exit on failure)
+        container_has_label "${container_id}" "${label_filter}"
+        local label_match=$?
+        if [[ ${label_match} -ne 0 ]]; then
             log "INFO" "Skipping ${container_name} (filtered by label)"
             ((filtered_count++))
             continue
@@ -257,7 +261,9 @@ check_for_updates() {
         # Check age filter
         if [[ -n "${UPDATE_MIN_AGE}" ]]; then
             local min_age_days=$(parse_age_filter "${UPDATE_MIN_AGE}")
-            if ! container_older_than "${container_id}" "${min_age_days}"; then
+            container_older_than "${container_id}" "${min_age_days}"
+            local age_match=$?
+            if [[ ${age_match} -ne 0 ]]; then
                 log "INFO" "Skipping ${container_name} (too new: min age ${UPDATE_MIN_AGE})"
                 ((filtered_count++))
                 continue
@@ -288,8 +294,10 @@ check_for_updates() {
 
         log "INFO" "Registry digest: ${registry_digest:0:20}..."
 
-        # Compare digests
-        if ! digests_match "${current_digest}" "${registry_digest}"; then
+        # Compare digests (capture return code to avoid exit on failure)
+        digests_match "${current_digest}" "${registry_digest}"
+        local digests_same=$?
+        if [[ ${digests_same} -ne 0 ]]; then
             log "INFO" "Update available for ${container_name}"
             updates_available+=("${container_name}|${image}|${current_digest}|${registry_digest}")
         else
