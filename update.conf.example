@@ -1,0 +1,172 @@
+# Pangolin Docker Update Configuration Example
+# Copy this file to ~/.pangolin/update.conf and customize as needed
+# Generated on $(date)
+
+# ============================================================================
+# GENERAL SETTINGS
+# ============================================================================
+
+# Enable automatic update checking
+UPDATE_CHECK_ENABLED=true
+
+# Automatically apply updates without prompting
+# WARNING: Only enable if you trust automatic updates
+UPDATE_AUTO_UPDATE=false
+
+# Only check and notify, don't update
+# Set to true for monitoring-only mode
+UPDATE_NOTIFY_ONLY=false
+
+# Use docker-compose for container management (recommended)
+UPDATE_USE_COMPOSE=true
+
+# ============================================================================
+# CONTAINER FILTERING
+# ============================================================================
+
+# Include only these containers (comma-separated, empty = all)
+# Example: "pangolin,gerbil,traefik"
+UPDATE_INCLUDE_CONTAINERS=""
+
+# Exclude these containers (comma-separated)
+# Example: "traefik,crowdsec"
+# Useful for containers you want to update manually
+UPDATE_EXCLUDE_CONTAINERS=""
+
+# Only update containers with this label (format: key=value)
+# Example: "auto-update=true"
+# Add this label to your docker-compose.yml for selective updates
+UPDATE_LABEL_FILTER=""
+
+# Only update containers older than this age
+# Format: "Nd" for days, "Nw" for weeks, "Nm" for months
+# Example: "7d" = only update containers older than 7 days
+# Leave empty to disable age filtering
+UPDATE_MIN_AGE=""
+
+# ============================================================================
+# UPDATE BEHAVIOR
+# ============================================================================
+
+# Backup images before updating (days to keep backups, 0 = no backup)
+# Backups are tagged as: dockcheck/container:YYYY-MM-DD_HHMM_tag
+# You can rollback by retagging: docker tag dockcheck/container:backup original:tag
+UPDATE_BACKUP_DAYS=7
+
+# Automatically prune dangling images after update
+# Frees up disk space by removing old unused images
+UPDATE_AUTO_PRUNE=true
+
+# Force recreate containers even if config hasn't changed
+# Useful if you want to ensure containers are fully refreshed
+UPDATE_FORCE_RECREATE=false
+
+# Registry timeout in seconds
+# Increase if you have slow registry connections
+UPDATE_REGISTRY_TIMEOUT=10
+
+# ============================================================================
+# NOTIFICATION SETTINGS
+# ============================================================================
+
+# Enable notifications
+UPDATE_NOTIFY_ENABLED=false
+
+# Notification channels to use (comma-separated)
+# Available: gotify, ntfy, discord, telegram, slack, email, apprise, custom
+# Example: "gotify,discord,telegram"
+UPDATE_NOTIFY_CHANNELS=""
+
+# ----------------------------------------------------------------------------
+# Gotify Configuration
+# Self-hosted push notification service
+# ----------------------------------------------------------------------------
+UPDATE_GOTIFY_URL=""
+UPDATE_GOTIFY_TOKEN=""
+UPDATE_GOTIFY_PRIORITY=5
+
+# ----------------------------------------------------------------------------
+# ntfy Configuration
+# Simple pub/sub notification service
+# ----------------------------------------------------------------------------
+UPDATE_NTFY_URL="https://ntfy.sh"
+UPDATE_NTFY_TOPIC=""
+UPDATE_NTFY_PRIORITY="default"
+UPDATE_NTFY_TOKEN=""
+
+# ----------------------------------------------------------------------------
+# Discord Configuration
+# Send notifications to Discord channel via webhook
+# ----------------------------------------------------------------------------
+UPDATE_DISCORD_WEBHOOK=""
+UPDATE_DISCORD_USERNAME="Docker Update Bot"
+
+# ----------------------------------------------------------------------------
+# Telegram Configuration
+# Send notifications via Telegram bot
+# ----------------------------------------------------------------------------
+UPDATE_TELEGRAM_BOT_TOKEN=""
+UPDATE_TELEGRAM_CHAT_ID=""
+
+# ----------------------------------------------------------------------------
+# Slack Configuration
+# Send notifications to Slack channel via webhook
+# ----------------------------------------------------------------------------
+UPDATE_SLACK_WEBHOOK=""
+UPDATE_SLACK_USERNAME="Docker Update Bot"
+
+# ----------------------------------------------------------------------------
+# Email Configuration
+# Send email notifications via SMTP
+# ----------------------------------------------------------------------------
+UPDATE_EMAIL_SMTP_SERVER=""
+UPDATE_EMAIL_SMTP_PORT=587
+UPDATE_EMAIL_FROM=""
+UPDATE_EMAIL_TO=""
+UPDATE_EMAIL_USERNAME=""
+UPDATE_EMAIL_PASSWORD=""
+
+# ----------------------------------------------------------------------------
+# Apprise Configuration
+# Unified notification service supporting 50+ services
+# Install: pip install apprise
+# ----------------------------------------------------------------------------
+# Apprise URL supports multiple services in one URL
+# Example: "discord://webhook_id/webhook_token telegram://bot_token/chat_id"
+UPDATE_APPRISE_URL=""
+
+# ----------------------------------------------------------------------------
+# Custom Script Configuration
+# Execute custom script for notifications
+# ----------------------------------------------------------------------------
+# Path to custom notification script
+# Script receives JSON notification data via stdin
+UPDATE_CUSTOM_SCRIPT=""
+
+# ============================================================================
+# EXAMPLE CONFIGURATIONS
+# ============================================================================
+
+# Example 1: Monitor all containers, notify only via Discord
+# UPDATE_NOTIFY_ONLY=true
+# UPDATE_NOTIFY_ENABLED=true
+# UPDATE_NOTIFY_CHANNELS="discord"
+# UPDATE_DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
+
+# Example 2: Auto-update specific containers with backup
+# UPDATE_AUTO_UPDATE=true
+# UPDATE_INCLUDE_CONTAINERS="pangolin,gerbil"
+# UPDATE_BACKUP_DAYS=14
+# UPDATE_AUTO_PRUNE=true
+
+# Example 3: Label-based selective updates with multiple notifications
+# UPDATE_LABEL_FILTER="auto-update=true"
+# UPDATE_BACKUP_DAYS=7
+# UPDATE_NOTIFY_ENABLED=true
+# UPDATE_NOTIFY_CHANNELS="gotify,telegram"
+
+# Example 4: Conservative updates (manual approval, long backup retention)
+# UPDATE_AUTO_UPDATE=false
+# UPDATE_BACKUP_DAYS=30
+# UPDATE_EXCLUDE_CONTAINERS="critical-service"
+# UPDATE_MIN_AGE="7d"

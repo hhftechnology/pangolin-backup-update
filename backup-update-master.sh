@@ -49,8 +49,69 @@ source "${SCRIPT_DIR}/backup-ba-up-ma.sh"
 source "${SCRIPT_DIR}/update-ba-up-ma.sh"
 source "${SCRIPT_DIR}/cron-ba-up-ma.sh"
 
+# Source Docker update automation scripts (optional, fail silently if not present)
+if [[ -f "${SCRIPT_DIR}/docker-update-utils.sh" ]]; then
+    source "${SCRIPT_DIR}/docker-update-utils.sh"
+    source "${SCRIPT_DIR}/docker-update-config.sh"
+    source "${SCRIPT_DIR}/docker-update-notify.sh"
+    UPDATE_AUTOMATION_AVAILABLE=true
+else
+    UPDATE_AUTOMATION_AVAILABLE=false
+fi
+
 # Set trap for cleanup
 trap cleanup_and_exit SIGINT SIGTERM EXIT
+
+# Wrapper functions for automated update features
+run_update_check() {
+    if [[ "${UPDATE_AUTOMATION_AVAILABLE}" != "true" ]]; then
+        log "ERROR" "Automated update system not available"
+        return 1
+    fi
+
+    clear
+    print_header "DOCKER IMAGE UPDATE CHECK"
+
+    # Load update configuration
+    load_update_config
+
+    # Run the update check script
+    "${SCRIPT_DIR}/docker-update-check.sh" -f "${DOCKER_COMPOSE_FILE}"
+
+    return $?
+}
+
+configure_automated_updates() {
+    if [[ "${UPDATE_AUTOMATION_AVAILABLE}" != "true" ]]; then
+        log "ERROR" "Automated update system not available"
+        return 1
+    fi
+
+    # Run configuration wizard
+    configure_update_settings
+
+    return 0
+}
+
+test_notification_setup() {
+    if [[ "${UPDATE_AUTOMATION_AVAILABLE}" != "true" ]]; then
+        log "ERROR" "Automated update system not available"
+        return 1
+    fi
+
+    clear
+    print_header "TEST NOTIFICATION SETUP"
+
+    # Load configuration
+    load_update_config
+
+    # Run test
+    test_notifications
+
+    printf "\nPress Enter to continue..."
+    read -r
+    return 0
+}
 
 # Parse command-line arguments
 parse_arguments() {
@@ -64,7 +125,7 @@ parse_arguments() {
             --config) [[ -n "${2:-}" ]] && { CONFIG_FILE="$2"; shift 2; } || { print_error "Missing argument for --config"; exit 1; } ;;
             --dir) [[ -n "${2:-}" ]] && { BACKUP_DIR="$2"; shift 2; } || { print_error "Missing argument for --dir"; exit 1; } ;;
             --help) print_usage; exit 0 ;;
-            backup|restore|delete|update-basic|update-full)
+            backup|restore|delete|update-basic|update-full|check-updates|configure-updates)
                 COMMAND="$1"
                 shift
                 if [[ "${COMMAND}" == "restore" && -n "${1:-}" && "${1:0:1}" != "-" ]]; then
@@ -102,8 +163,18 @@ show_main_menu() {
         printf "\n${CYAN}Update Options:${NC}\n"
         printf "7. Update Stack (excluding CrowdSec)\n"
         printf "8. Update Stack (including CrowdSec)\n"
+
+        if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+            printf "\n${CYAN}Automated Update Options:${NC}\n"
+            printf "a. Check for Docker Image Updates\n"
+            printf "b. Configure Automated Updates\n"
+            printf "c. Test Notification Setup\n"
+        fi
+
         printf "\n9. Exit\n\n"
-        printf "Enter your choice [1-9]: "
+        printf "Enter your choice [1-9"
+        [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]] && printf "/a-c"
+        printf "]: "
         local choice
         read -r choice
         
@@ -116,6 +187,30 @@ show_main_menu() {
             6) setup_cron_job ;;
             7) update_without_crowdsec ;;
             8) update_with_crowdsec ;;
+            a|A)
+                if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+                    run_update_check
+                else
+                    log "ERROR" "Automated updates not available. Install docker-update scripts."
+                    sleep 2
+                fi
+                ;;
+            b|B)
+                if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+                    configure_automated_updates
+                else
+                    log "ERROR" "Automated updates not available. Install docker-update scripts."
+                    sleep 2
+                fi
+                ;;
+            c|C)
+                if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+                    test_notification_setup
+                else
+                    log "ERROR" "Automated updates not available. Install docker-update scripts."
+                    sleep 2
+                fi
+                ;;
             9) exit_menu=true ;;
             *) log "ERROR" "Invalid choice."; sleep 2 ;;
         esac
@@ -161,6 +256,22 @@ main() {
             update-full)
                 INCLUDE_CROWDSEC=true
                 update_with_crowdsec && log "SUCCESS" "Update (full) completed successfully at $(date)" || log "ERROR" "Update (full) failed at $(date)"
+                [[ "${INTERACTIVE}" == false ]] && exit $?
+                ;;
+            check-updates)
+                if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+                    run_update_check && log "SUCCESS" "Update check completed at $(date)" || log "ERROR" "Update check failed at $(date)"
+                else
+                    log "ERROR" "Automated updates not available. Install docker-update scripts."
+                fi
+                [[ "${INTERACTIVE}" == false ]] && exit $?
+                ;;
+            configure-updates)
+                if [[ "${UPDATE_AUTOMATION_AVAILABLE}" == "true" ]]; then
+                    configure_automated_updates
+                else
+                    log "ERROR" "Automated updates not available. Install docker-update scripts."
+                fi
                 [[ "${INTERACTIVE}" == false ]] && exit $?
                 ;;
         esac
