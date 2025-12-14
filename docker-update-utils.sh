@@ -2,9 +2,75 @@
 
 # Docker Update Utilities
 # Utility functions for Docker image update detection and automation
+# Following dockcheck logic from https://github.com/mag37/dockcheck
 
-# Get image digest from registry using Docker Registry API v2
-# Supports Docker Hub, GHCR, and custom registries
+# Global variables for tools
+REGCTL_BIN=""
+TIMEOUT_CMD="timeout"
+
+# Setup regctl binary (following dockcheck's approach)
+setup_regctl() {
+    # Check if regctl is already available
+    if command -v regctl >/dev/null 2>&1; then
+        REGCTL_BIN="regctl"
+        return 0
+    fi
+
+    # Check for local installation
+    local local_regctl="${HOME}/.docker/cli-plugins/regctl"
+    if [[ -x "${local_regctl}" ]]; then
+        REGCTL_BIN="${local_regctl}"
+        return 0
+    fi
+
+    # Try to download regctl
+    log "INFO" "regctl not found, attempting to download..."
+
+    local regctl_dir="${HOME}/.docker/cli-plugins"
+    mkdir -p "${regctl_dir}"
+
+    local arch="amd64"
+    local os="linux"
+    case "$(uname -m)" in
+        x86_64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        armv7l) arch="armv7" ;;
+    esac
+
+    local regctl_url="https://github.com/regclient/regclient/releases/latest/download/regctl-${os}-${arch}"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "${regctl_url}" -o "${local_regctl}" && chmod +x "${local_regctl}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "${regctl_url}" -O "${local_regctl}" && chmod +x "${local_regctl}"
+    else
+        log "ERROR" "Cannot download regctl: neither curl nor wget available"
+        return 1
+    fi
+
+    if [[ -x "${local_regctl}" ]]; then
+        REGCTL_BIN="${local_regctl}"
+        log "SUCCESS" "Downloaded regctl successfully"
+        return 0
+    else
+        log "ERROR" "Failed to download or install regctl"
+        return 1
+    fi
+}
+
+# Setup timeout command (following dockcheck's approach)
+setup_timeout() {
+    if command -v timeout >/dev/null 2>&1; then
+        TIMEOUT_CMD="timeout"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        TIMEOUT_CMD="gtimeout"
+    else
+        TIMEOUT_CMD=""
+    fi
+}
+
+# Get image digest from registry using regctl (dockcheck method)
+# This is much more reliable than curl-based API calls
 get_registry_digest() {
     local image_full=${1:-}
 
@@ -12,95 +78,40 @@ get_registry_digest() {
         return 1
     fi
 
-    # Check if curl is available
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "ERROR: curl is required for registry queries" >&2
-        return 1
+    # Ensure regctl is available
+    if [[ -z "${REGCTL_BIN}" ]]; then
+        setup_regctl || return 1
     fi
-    local registry=""
-    local repository=""
-    local tag="latest"
-    local auth_header=""
 
-    # Parse image name: [registry/]repository[:tag]
-    if [[ "${image_full}" =~ ^([^/]+\.[^/]+)/(.+):(.+)$ ]]; then
-        # Custom registry with tag: registry.example.com/repo/image:tag
-        registry="${BASH_REMATCH[1]}"
-        repository="${BASH_REMATCH[2]}"
-        tag="${BASH_REMATCH[3]}"
-    elif [[ "${image_full}" =~ ^([^/]+\.[^/]+)/(.+)$ ]]; then
-        # Custom registry without tag: registry.example.com/repo/image
-        registry="${BASH_REMATCH[1]}"
-        repository="${BASH_REMATCH[2]}"
-        tag="latest"
-    elif [[ "${image_full}" =~ ^([^/]+)/([^:]+):(.+)$ ]]; then
-        # Docker Hub with namespace and tag: user/image:tag or ghcr.io/user/image:tag
-        local first_part="${BASH_REMATCH[1]}"
-        if [[ "${first_part}" == "ghcr.io" || "${first_part}" == "docker.io" ]]; then
-            registry="${first_part}"
-            repository="${BASH_REMATCH[2]}"
-        else
-            registry="docker.io"
-            repository="${first_part}/${BASH_REMATCH[2]}"
-        fi
-        tag="${BASH_REMATCH[3]}"
-    elif [[ "${image_full}" =~ ^([^/]+)/([^:]+)$ ]]; then
-        # Docker Hub with namespace, no tag: user/image
-        registry="docker.io"
-        repository="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-        tag="latest"
-    elif [[ "${image_full}" =~ ^([^:]+):(.+)$ ]]; then
-        # Official image with tag: image:tag
-        registry="docker.io"
-        repository="library/${BASH_REMATCH[1]}"
-        tag="${BASH_REMATCH[2]}"
+    # Query registry using regctl (dockcheck method)
+    local timeout_val="${UPDATE_REGISTRY_TIMEOUT:-10}"
+    local reg_hash=""
+
+    if [[ -n "${TIMEOUT_CMD}" ]]; then
+        reg_hash=$("${TIMEOUT_CMD}" "${timeout_val}" "${REGCTL_BIN}" -v error image digest --list "${image_full}" 2>&1)
     else
-        # Official image without tag: image
-        registry="docker.io"
-        repository="library/${image_full}"
-        tag="latest"
+        reg_hash=$("${REGCTL_BIN}" -v error image digest --list "${image_full}" 2>&1)
     fi
 
-    # Get authentication token for the registry
-    if [[ "${registry}" == "docker.io" ]]; then
-        # Docker Hub authentication
-        local token=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull" 2>/dev/null | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-        [[ -n "${token}" ]] && auth_header="Authorization: Bearer ${token}"
-    elif [[ "${registry}" == "ghcr.io" ]]; then
-        # GitHub Container Registry - anonymous access for public repos
-        # For private repos, would need: -H "Authorization: Bearer ${GITHUB_TOKEN}"
-        auth_header=""
-    fi
+    local exit_code=$?
 
-    # Query registry for image manifest
-    local registry_url="https://${registry}"
-    [[ "${registry}" == "docker.io" ]] && registry_url="https://registry-1.docker.io"
-
-    local manifest_url="${registry_url}/v2/${repository}/manifests/${tag}"
-
-    # Get manifest digest
-    local digest=""
-    if [[ -n "${auth_header}" ]]; then
-        digest=$(curl -fsSL -H "${auth_header}" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" -H "Accept: application/vnd.oci.image.manifest.v1+json" -I "${manifest_url}" 2>/dev/null | grep -i "docker-content-digest:" | awk '{print $2}' | tr -d '\r')
-    else
-        digest=$(curl -fsSL -H "Accept: application/vnd.docker.distribution.manifest.v2+json" -H "Accept: application/vnd.oci.image.manifest.v1+json" -I "${manifest_url}" 2>/dev/null | grep -i "docker-content-digest:" | awk '{print $2}' | tr -d '\r')
-    fi
-
-    # Fallback: try docker manifest inspect if curl method failed
-    if [[ -z "${digest}" ]] && command -v docker >/dev/null 2>&1; then
-        digest=$(docker manifest inspect "${image_full}" 2>/dev/null | grep -o '"digest"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
-    fi
-
-    # Only echo if we got a digest
-    if [[ -n "${digest}" ]]; then
-        echo "${digest}"
+    if [[ ${exit_code} -eq 0 && -n "${reg_hash}" ]]; then
+        echo "${reg_hash}"
         return 0
     else
+        # If regctl fails, try docker manifest as fallback
+        if command -v docker >/dev/null 2>&1; then
+            local manifest_digest=$(docker manifest inspect "${image_full}" 2>/dev/null | grep -o '"digest"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
+            if [[ -n "${manifest_digest}" ]]; then
+                echo "${manifest_digest}"
+                return 0
+            fi
+        fi
         return 1
     fi
 }
 
-# Get running container's image digest
+# Get running container's image digest (dockcheck method)
 get_container_digest() {
     local container_id=${1:-}
 
@@ -112,25 +123,24 @@ get_container_digest() {
         return 1
     fi
 
-    # Get the image ID/digest that the container is running
-    local image_id=$(docker inspect --format='{{.Image}}' "${container_id}" 2>/dev/null)
+    # Following dockcheck: get Image ID first, then RepoDigests
+    local image_id=$(docker inspect "${container_id}" --format='{{.Image}}' 2>/dev/null)
 
     if [[ -z "${image_id}" ]]; then
         return 1
     fi
 
-    # Get the RepoDigest from the image
-    local repo_digests=$(docker inspect --format='{{range .RepoDigests}}{{.}} {{end}}' "${image_id}" 2>/dev/null)
+    # Get RepoDigests list from the image (this is what we compare against)
+    local local_hash=$(docker image inspect "${image_id}" --format='{{.RepoDigests}}' 2>/dev/null)
 
-    # Extract the digest (sha256:...)
-    local digest=$(echo "${repo_digests}" | grep -o 'sha256:[a-f0-9]*' | head -1)
-
-    # Fallback: use image ID if no RepoDigest available (local builds)
-    if [[ -z "${digest}" ]]; then
-        digest="${image_id}"
+    if [[ -n "${local_hash}" ]]; then
+        echo "${local_hash}"
+        return 0
+    else
+        # No RepoDigests - likely a local build
+        echo "${image_id}"
+        return 0
     fi
-
-    echo "${digest}"
 }
 
 # Check if container matches include/exclude filters
@@ -306,25 +316,23 @@ prune_dangling_images() {
     fi
 }
 
-# Compare two digests
+# Compare local and registry digests (dockcheck method)
+# Uses string matching: if LocalHash contains RegHash, they match
 digests_match() {
-    local digest1=$1
-    local digest2=$2
-
-    # Remove any whitespace
-    digest1=$(echo "${digest1}" | xargs)
-    digest2=$(echo "${digest2}" | xargs)
+    local local_hash=${1:-}
+    local reg_hash=${2:-}
 
     # Empty digests don't match
-    if [[ -z "${digest1}" || -z "${digest2}" ]]; then
+    if [[ -z "${local_hash}" || -z "${reg_hash}" ]]; then
         return 1
     fi
 
-    # Compare
-    if [[ "${digest1}" == "${digest2}" ]]; then
-        return 0
+    # Following dockcheck: check if local hash contains registry hash
+    # This handles cases where local_hash is a list like "[docker.io/image@sha256:abc...]"
+    if [[ "${local_hash}" == *"${reg_hash}"* ]]; then
+        return 0  # Match - no update needed
     else
-        return 1
+        return 1  # No match - update available
     fi
 }
 

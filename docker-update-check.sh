@@ -3,7 +3,8 @@
 # Docker Update Check & Automation
 
 # Use safer bash settings but allow some flexibility
-set -eo pipefail
+# Note: Avoid 'set -e' as it can cause issues with functions that return non-zero
+set -o pipefail
 
 # Script metadata
 readonly SCRIPT_NAME=$(basename "$0")
@@ -205,6 +206,10 @@ check_for_updates() {
     check_dependencies || { log "ERROR" "Missing dependencies"; return 1; }
     check_docker || { log "ERROR" "Docker not available"; return 1; }
 
+    # Setup regctl and timeout (following dockcheck)
+    setup_timeout
+    setup_regctl || { log "ERROR" "Failed to setup regctl"; return 1; }
+
     # Discover containers
     log "INFO" "Discovering containers..."
     local containers=($(discover_containers "${DOCKER_COMPOSE_FILE}" "${UPDATE_USE_COMPOSE}"))
@@ -245,7 +250,7 @@ check_for_updates() {
         local name_match=$?
         if [[ ${name_match} -ne 0 ]]; then
             log "INFO" "Skipping ${container_name} (filtered by name)"
-            ((filtered_count++))
+            filtered_count=$((filtered_count + 1))
             continue
         fi
 
@@ -254,7 +259,7 @@ check_for_updates() {
         local label_match=$?
         if [[ ${label_match} -ne 0 ]]; then
             log "INFO" "Skipping ${container_name} (filtered by label)"
-            ((filtered_count++))
+            filtered_count=$((filtered_count + 1))
             continue
         fi
 
@@ -265,12 +270,12 @@ check_for_updates() {
             local age_match=$?
             if [[ ${age_match} -ne 0 ]]; then
                 log "INFO" "Skipping ${container_name} (too new: min age ${UPDATE_MIN_AGE})"
-                ((filtered_count++))
+                filtered_count=$((filtered_count + 1))
                 continue
             fi
         fi
 
-        ((checked_count++))
+        checked_count=$((checked_count + 1))
         log "INFO" "Checking ${container_name} (${image})..."
 
         # Get current digest
