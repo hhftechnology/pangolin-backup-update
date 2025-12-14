@@ -215,12 +215,22 @@ discover_containers() {
 
 # Get container info (name, image, status)
 get_container_info() {
-    local container_id=$1
+    local container_id=${1:-}
+
+    if [[ -z "${container_id}" ]]; then
+        echo "unknown|unknown|unknown|unknown"
+        return 1
+    fi
 
     local name=$(docker inspect --format='{{.Name}}' "${container_id}" 2>/dev/null | sed 's/^\///')
     local image=$(docker inspect --format='{{.Config.Image}}' "${container_id}" 2>/dev/null)
     local status=$(docker inspect --format='{{.State.Status}}' "${container_id}" 2>/dev/null)
     local created=$(docker inspect --format='{{.Created}}' "${container_id}" 2>/dev/null)
+
+    if [[ -z "${name}" || -z "${image}" ]]; then
+        echo "unknown|unknown|unknown|unknown"
+        return 1
+    fi
 
     echo "${name}|${image}|${status}|${created}"
 }

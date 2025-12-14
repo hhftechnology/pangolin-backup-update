@@ -222,10 +222,18 @@ check_for_updates() {
     local checked_count=0
     local filtered_count=0
 
+    log "INFO" "Starting update check loop..."
+
     for container_id in "${containers[@]}"; do
+        log "INFO" "Processing container ID: ${container_id}"
         # Get container info
         local info=$(get_container_info "${container_id}")
+        if [[ $? -ne 0 ]]; then
+            log "WARNING" "Failed to get info for container ${container_id}"
+            continue
+        fi
         IFS='|' read -r container_name image status created <<< "${info}"
+        log "INFO" "Container: ${container_name}, Image: ${image}"
 
         # Apply filters
         local include_filter="${OPT_INCLUDE:-${UPDATE_INCLUDE_CONTAINERS}}"
@@ -489,6 +497,19 @@ main() {
 
     # Load configuration
     load_update_config "${OPT_CONFIG_FILE}"
+
+    # Ensure all variables are initialized (prevent unbound variable errors)
+    UPDATE_INCLUDE_CONTAINERS="${UPDATE_INCLUDE_CONTAINERS:-}"
+    UPDATE_EXCLUDE_CONTAINERS="${UPDATE_EXCLUDE_CONTAINERS:-}"
+    UPDATE_LABEL_FILTER="${UPDATE_LABEL_FILTER:-}"
+    UPDATE_MIN_AGE="${UPDATE_MIN_AGE:-}"
+    UPDATE_NOTIFY_ENABLED="${UPDATE_NOTIFY_ENABLED:-false}"
+    UPDATE_NOTIFY_CHANNELS="${UPDATE_NOTIFY_CHANNELS:-}"
+    UPDATE_AUTO_UPDATE="${UPDATE_AUTO_UPDATE:-false}"
+    UPDATE_NOTIFY_ONLY="${UPDATE_NOTIFY_ONLY:-false}"
+    UPDATE_BACKUP_DAYS="${UPDATE_BACKUP_DAYS:-0}"
+    UPDATE_AUTO_PRUNE="${UPDATE_AUTO_PRUNE:-false}"
+    UPDATE_FORCE_RECREATE="${UPDATE_FORCE_RECREATE:-false}"
 
     # Override config with command line options
     [[ -n "${OPT_AUTO_UPDATE}" ]] && UPDATE_AUTO_UPDATE="${OPT_AUTO_UPDATE}"

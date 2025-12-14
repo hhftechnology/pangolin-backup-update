@@ -75,10 +75,15 @@ run_update_check() {
     # Load update configuration
     load_update_config
 
-    # Run the update check script
-    "${SCRIPT_DIR}/docker-update-check.sh" -f "${DOCKER_COMPOSE_FILE}"
+    # Run the update check script with explicit path
+    log "INFO" "Running update check..."
+    bash "${SCRIPT_DIR}/docker-update-check.sh" -f "${DOCKER_COMPOSE_FILE}" || {
+        local exit_code=$?
+        log "ERROR" "Update check failed with exit code: ${exit_code}"
+        return ${exit_code}
+    }
 
-    return $?
+    return 0
 }
 
 configure_automated_updates() {
