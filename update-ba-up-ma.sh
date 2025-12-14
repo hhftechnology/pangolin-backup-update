@@ -417,6 +417,20 @@ update_service_image() {
     
     if [[ "${update_successful}" == true ]]; then
         # Verify the update before replacing
+        # Check if the new tag appears in the file (with any registry prefix)
+        local escaped_base=$(printf '%s\n' "${image_name}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        if grep -qE "(/)?${escaped_base}:${new_tag}" "${tmp_file}" 2>/dev/null; then
+            mv "${tmp_file}" "${file}" || { 
+                log "ERROR" "Failed to update ${file} for ${service_name}"
+                rm -f "${tmp_file}" 2>/dev/null || true
+                return 1
+            }
+        else
+            log "ERROR" "Update verification failed for ${service_name}"
+            rm -f "${tmp_file}" 2>/dev/null || true
+            return 1
+        fi
+        else
         log "ERROR" "Could not find image line for ${service_name} with ${image_name}"
         rm -f "${tmp_file}" 2>/dev/null || true
         return 1
