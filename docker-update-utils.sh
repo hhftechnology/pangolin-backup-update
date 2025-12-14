@@ -6,7 +6,17 @@
 # Get image digest from registry using Docker Registry API v2
 # Supports Docker Hub, GHCR, and custom registries
 get_registry_digest() {
-    local image_full=$1
+    local image_full=${1:-}
+
+    if [[ -z "${image_full}" ]]; then
+        return 1
+    fi
+
+    # Check if curl is available
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is required for registry queries" >&2
+        return 1
+    fi
     local registry=""
     local repository=""
     local tag="latest"
@@ -81,12 +91,22 @@ get_registry_digest() {
         digest=$(docker manifest inspect "${image_full}" 2>/dev/null | grep -o '"digest"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
     fi
 
-    echo "${digest}"
+    # Only echo if we got a digest
+    if [[ -n "${digest}" ]]; then
+        echo "${digest}"
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Get running container's image digest
 get_container_digest() {
-    local container_id=$1
+    local container_id=${1:-}
+
+    if [[ -z "${container_id}" ]]; then
+        return 1
+    fi
 
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -207,8 +227,8 @@ get_container_info() {
 
 # Backup container image before update
 backup_container_image() {
-    local container_id=$1
-    local backup_days=$2
+    local container_id=${1:-}
+    local backup_days=${2:-0}
 
     local container_name=$(docker inspect --format='{{.Name}}' "${container_id}" 2>/dev/null | sed 's/^\///')
     local image=$(docker inspect --format='{{.Config.Image}}' "${container_id}" 2>/dev/null)
@@ -236,7 +256,7 @@ backup_container_image() {
 
 # Cleanup old backup images
 cleanup_old_backups() {
-    local backup_days=$1
+    local backup_days=${1:-0}
 
     if [[ -z "${backup_days}" || "${backup_days}" -le 0 ]]; then
         return 0
@@ -316,8 +336,8 @@ get_compose_service() {
 
 # Update container using docker-compose
 update_container_compose() {
-    local container_id=$1
-    local compose_file=$2
+    local container_id=${1:-}
+    local compose_file=${2:-}
     local force_recreate=${3:-false}
 
     local service=$(get_compose_service "${container_id}" "${compose_file}")
@@ -359,7 +379,7 @@ update_container_compose() {
 
 # Update standalone container (not from compose)
 update_container_standalone() {
-    local container_id=$1
+    local container_id=${1:-}
     local force_recreate=${2:-false}
 
     local container_name=$(docker inspect --format='{{.Name}}' "${container_id}" 2>/dev/null | sed 's/^\///')

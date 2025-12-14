@@ -2,7 +2,8 @@
 
 # Docker Update Check & Automation
 
-set -euo pipefail
+# Use safer bash settings but allow some flexibility
+set -eo pipefail
 
 # Script metadata
 readonly SCRIPT_NAME=$(basename "$0")
@@ -259,20 +260,25 @@ check_for_updates() {
         log "INFO" "Checking ${container_name} (${image})..."
 
         # Get current digest
-        local current_digest=$(get_container_digest "${container_id}")
+        local current_digest=$(get_container_digest "${container_id}" 2>&1)
 
         if [[ -z "${current_digest}" ]]; then
-            log "WARNING" "Could not get digest for ${container_name}, skipping"
+            log "WARNING" "Could not get digest for ${container_name}, skipping (container may not have digest info)"
             continue
         fi
+
+        log "INFO" "Current digest: ${current_digest:0:20}..."
 
         # Get registry digest
-        local registry_digest=$(get_registry_digest "${image}")
+        log "INFO" "Querying registry for ${image}..."
+        local registry_digest=$(get_registry_digest "${image}" 2>&1)
 
         if [[ -z "${registry_digest}" ]]; then
-            log "WARNING" "Could not query registry for ${image}, skipping"
+            log "WARNING" "Could not query registry for ${image}, skipping (no digest returned)"
             continue
         fi
+
+        log "INFO" "Registry digest: ${registry_digest:0:20}..."
 
         # Compare digests
         if ! digests_match "${current_digest}" "${registry_digest}"; then
@@ -287,6 +293,15 @@ check_for_updates() {
 
     # Report results
     local update_count=${#updates_available[@]}
+
+    if [[ ${checked_count} -eq 0 ]]; then
+        log "WARNING" "No containers were checked. Possible reasons:"
+        log "WARNING" "  - All containers filtered out"
+        log "WARNING" "  - Containers don't have digest information"
+        log "WARNING" "  - Registry queries are failing"
+        log "INFO" "Try running with verbose logging or check /tmp/docker-update-check.log"
+        return 0
+    fi
 
     if [[ ${update_count} -eq 0 ]]; then
         log "SUCCESS" "All containers are up to date!"
