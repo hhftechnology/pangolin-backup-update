@@ -24,51 +24,112 @@ send_notifications() {
 
     local sent_count=0
     local failed_count=0
+    local -a succeeded_channels=()
+    local -a failed_channels=()
 
     for channel in "${CHANNELS[@]}"; do
         channel=$(echo "${channel}" | xargs)  # trim whitespace
+        [[ -z "${channel}" ]] && continue
 
         case "${channel}" in
             gotify)
-                send_gotify_notification "${title}" "${message}" "${priority}" && ((sent_count++)) || ((failed_count++))
+                if send_gotify_notification "${title}" "${message}" "${priority}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             ntfy)
-                send_ntfy_notification "${title}" "${message}" "${priority}" && ((sent_count++)) || ((failed_count++))
+                if send_ntfy_notification "${title}" "${message}" "${priority}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             discord)
-                send_discord_notification "${title}" "${message}" "${updates_json}" && ((sent_count++)) || ((failed_count++))
+                if send_discord_notification "${title}" "${message}" "${updates_json}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             telegram)
-                send_telegram_notification "${title}" "${message}" && ((sent_count++)) || ((failed_count++))
+                if send_telegram_notification "${title}" "${message}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             slack)
-                send_slack_notification "${title}" "${message}" "${updates_json}" && ((sent_count++)) || ((failed_count++))
+                if send_slack_notification "${title}" "${message}" "${updates_json}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             email)
-                send_email_notification "${title}" "${message}" && ((sent_count++)) || ((failed_count++))
+                if send_email_notification "${title}" "${message}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             apprise)
-                send_apprise_notification "${title}" "${message}" && ((sent_count++)) || ((failed_count++))
+                if send_apprise_notification "${title}" "${message}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             custom)
-                send_custom_notification "${title}" "${message}" "${updates_json}" && ((sent_count++)) || ((failed_count++))
+                if send_custom_notification "${title}" "${message}" "${updates_json}"; then
+                    sent_count=$((sent_count + 1))
+                    succeeded_channels+=("${channel}")
+                else
+                    failed_count=$((failed_count + 1))
+                    failed_channels+=("${channel}")
+                fi
                 ;;
             *)
                 log "WARNING" "Unknown notification channel: ${channel}"
-                ((failed_count++))
+                failed_count=$((failed_count + 1))
+                failed_channels+=("${channel}")
                 ;;
         esac
     done
 
+    # Report results with details
     if [[ ${sent_count} -gt 0 ]]; then
-        log "SUCCESS" "Sent notifications via ${sent_count} channel(s)"
-    fi
+        log "SUCCESS" "Notifications sent: ${succeeded_channels[*]}"
 
-    if [[ ${failed_count} -gt 0 ]]; then
-        log "WARNING" "Failed to send notifications via ${failed_count} channel(s)"
+        # Only show info about failures if some channels worked
+        if [[ ${failed_count} -gt 0 ]]; then
+            log "INFO" "Some channels failed: ${failed_channels[*]}"
+        fi
+        return 0
+    elif [[ ${failed_count} -gt 0 ]]; then
+        # All notifications failed
+        log "ERROR" "All notification channels failed: ${failed_channels[*]}"
+        return 1
+    else
+        # No channels configured or processed
+        log "WARNING" "No notification channels configured"
+        return 1
     fi
-
-    return 0
 }
 
 # Gotify notification

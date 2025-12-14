@@ -16,6 +16,7 @@ source "${SCRIPT_DIR}/utils-ba-up-ma.sh" || { echo "ERROR: Failed to load utils"
 source "${SCRIPT_DIR}/docker-update-utils.sh" || { echo "ERROR: Failed to load docker-update-utils"; exit 1; }
 source "${SCRIPT_DIR}/docker-update-config.sh" || { echo "ERROR: Failed to load docker-update-config"; exit 1; }
 source "${SCRIPT_DIR}/docker-update-notify.sh" || { echo "ERROR: Failed to load docker-update-notify"; exit 1; }
+source "${SCRIPT_DIR}/docker-update-notify-helpers.sh" || { echo "ERROR: Failed to load docker-update-notify-helpers"; exit 1; }
 
 # Global variables
 DOCKER_COMPOSE_FILE="${DOCKER_COMPOSE_FILE:-./docker-compose.yml}"
@@ -198,7 +199,7 @@ parse_args() {
     done
 }
 
-# Main update check function
+# Main update check function (following dockcheck's collect-then-process pattern)
 check_for_updates() {
     log "INFO" "Starting Docker update check..."
 
@@ -216,99 +217,94 @@ check_for_updates() {
 
     if [[ ${#containers[@]} -eq 0 ]]; then
         log "WARNING" "No containers found"
+        send_notification_if_enabled "Docker Update Check" "No containers found to check" "normal" "{}"
         return 0
     fi
 
     log "INFO" "Found ${#containers[@]} container(s)"
 
-    # Check each container for updates
-    local updates_available=()
-    local updates_json=""
+    # Arrays to categorize results (dockcheck pattern)
+    local -a updates_available=()
+    local -a no_updates=()
+    local -a got_errors=()
     local checked_count=0
     local filtered_count=0
 
     log "INFO" "Starting update check loop..."
 
+    # Check all containers first, don't exit on errors (dockcheck pattern)
     for container_id in "${containers[@]}"; do
-        log "INFO" "Processing container ID: ${container_id}"
         # Get container info
         local info=$(get_container_info "${container_id}")
         if [[ $? -ne 0 ]]; then
             log "WARNING" "Failed to get info for container ${container_id}"
+            got_errors+=("${container_id}|unknown|Failed to get container info")
             continue
         fi
+
         IFS='|' read -r container_name image status created <<< "${info}"
-        log "INFO" "Container: ${container_name}, Image: ${image}"
+        log "INFO" "Checking: ${container_name} (${image})"
 
         # Apply filters
         local include_filter="${OPT_INCLUDE:-${UPDATE_INCLUDE_CONTAINERS}}"
         local exclude_filter="${OPT_EXCLUDE:-${UPDATE_EXCLUDE_CONTAINERS}}"
         local label_filter="${OPT_LABEL:-${UPDATE_LABEL_FILTER}}"
 
-        # Check name filters (capture return code to avoid exit on failure)
+        # Check filters (don't exit on failure)
         container_matches_filter "${container_name}" "${include_filter}" "${exclude_filter}"
-        local name_match=$?
-        if [[ ${name_match} -ne 0 ]]; then
-            log "INFO" "Skipping ${container_name} (filtered by name)"
+        if [[ $? -ne 0 ]]; then
+            log "INFO" "Filtered: ${container_name} (name filter)"
             filtered_count=$((filtered_count + 1))
             continue
         fi
 
-        # Check label filter (capture return code to avoid exit on failure)
         container_has_label "${container_id}" "${label_filter}"
-        local label_match=$?
-        if [[ ${label_match} -ne 0 ]]; then
-            log "INFO" "Skipping ${container_name} (filtered by label)"
+        if [[ $? -ne 0 ]]; then
+            log "INFO" "Filtered: ${container_name} (label filter)"
             filtered_count=$((filtered_count + 1))
             continue
         fi
 
-        # Check age filter
         if [[ -n "${UPDATE_MIN_AGE}" ]]; then
             local min_age_days=$(parse_age_filter "${UPDATE_MIN_AGE}")
             container_older_than "${container_id}" "${min_age_days}"
-            local age_match=$?
-            if [[ ${age_match} -ne 0 ]]; then
-                log "INFO" "Skipping ${container_name} (too new: min age ${UPDATE_MIN_AGE})"
+            if [[ $? -ne 0 ]]; then
+                log "INFO" "Filtered: ${container_name} (age < ${UPDATE_MIN_AGE})"
                 filtered_count=$((filtered_count + 1))
                 continue
             fi
         fi
 
         checked_count=$((checked_count + 1))
-        log "INFO" "Checking ${container_name} (${image})..."
 
-        # Get current digest
-        local current_digest=$(get_container_digest "${container_id}" 2>&1)
-
-        if [[ -z "${current_digest}" ]]; then
-            log "WARNING" "Could not get digest for ${container_name}, skipping (container may not have digest info)"
+        # Get local digest (following dockcheck pattern)
+        local local_hash=$(get_container_digest "${container_id}" 2>&1)
+        if [[ -z "${local_hash}" ]]; then
+            log "WARNING" "No digest for ${container_name}"
+            got_errors+=("${container_name}|${image}|No local digest")
             continue
         fi
 
-        log "INFO" "Current digest: ${current_digest:0:20}..."
-
-        # Get registry digest
-        log "INFO" "Querying registry for ${image}..."
-        local registry_digest=$(get_registry_digest "${image}" 2>&1)
-
-        if [[ -z "${registry_digest}" ]]; then
-            log "WARNING" "Could not query registry for ${image}, skipping (no digest returned)"
+        # Query registry (following dockcheck pattern)
+        local reg_hash=$(get_registry_digest "${image}" 2>&1)
+        if [[ -z "${reg_hash}" || "${reg_hash}" == *"error"* || "${reg_hash}" == *"ERROR"* ]]; then
+            log "WARNING" "Registry query failed for ${image}"
+            got_errors+=("${container_name}|${image}|Registry query failed")
             continue
         fi
 
-        log "INFO" "Registry digest: ${registry_digest:0:20}..."
-
-        # Compare digests (capture return code to avoid exit on failure)
-        digests_match "${current_digest}" "${registry_digest}"
-        local digests_same=$?
-        if [[ ${digests_same} -ne 0 ]]; then
-            log "INFO" "Update available for ${container_name}"
-            updates_available+=("${container_name}|${image}|${current_digest}|${registry_digest}")
+        # Compare digests (dockcheck pattern: string contains)
+        if [[ "${local_hash}" == *"${reg_hash}"* ]]; then
+            log "INFO" "✓ ${container_name} is up to date"
+            no_updates+=("${container_name}|${image}")
         else
-            log "INFO" "${container_name} is up to date"
+            log "INFO" "⚠ ${container_name} has update available"
+            updates_available+=("${container_name}|${image}|${local_hash}|${reg_hash}")
         fi
     done
+
+    # Always send notification summary before processing results
+    send_check_summary_notification "${checked_count}" "${#updates_available[@]}" "${#got_errors[@]}" "${updates_available[@]}"
 
     log "INFO" "Checked ${checked_count} container(s), filtered ${filtered_count}"
 
@@ -536,6 +532,9 @@ main() {
 
     # Validate configuration
     validate_update_config
+
+    # Setup exit trap for notifications (ensures notifications even on error)
+    setup_notification_trap
 
     # Handle test notification
     if [[ "${OPT_TEST_NOTIFY}" == "true" ]]; then
