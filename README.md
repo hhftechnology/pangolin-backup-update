@@ -1,5 +1,7 @@
 # Pangolin Backup & Update Management
 
+[![Discuss on the HHF forum](https://img.shields.io/badge/discuss-forum.hhf.technology-E65100?logo=discourse&logoColor=white)](https://forum.hhf.technology/c/pangolin-newt-tools/pangolin-backup-update)
+
 ## Features
 
 ### Core Features
